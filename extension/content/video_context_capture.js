@@ -12,6 +12,12 @@
  * @property {string | null} videoUrl - The extracted video URL, when available.
  * @property {string} pageTitle - The document title to help identify the content.
  * @property {string} platformName - The platform or site name derived from metadata.
+ * @property {string} requestId - The identifier for the request-response cycle.
+ */
+
+/**
+ * @typedef {Object} VideoContextRequest
+ * @property {string} requestId - The identifier for the request-response cycle.
  */
 
 /**
@@ -158,9 +164,10 @@ function getPlatformName() {
 
 /**
  * Build the payload sent back to the background service worker.
+ * @param {string} requestId - The identifier for the request-response cycle.
  * @returns {VideoContextResponse}
  */
-function buildVideoContextResponse() {
+function buildVideoContextResponse(requestId) {
   const nearestVideoElement = findNearestVideoElement(lastRightClickedElement);
   const videoUrlFromElement = extractVideoUrlFromElement(nearestVideoElement);
   const videoUrlFromMetadata = extractVideoUrlFromMetadata();
@@ -168,7 +175,8 @@ function buildVideoContextResponse() {
   return {
     videoUrl: videoUrlFromElement ?? videoUrlFromMetadata,
     pageTitle: document.title,
-    platformName: getPlatformName()
+    platformName: getPlatformName(),
+    requestId
   };
 }
 
@@ -207,7 +215,10 @@ function handleRuntimeMessage(message) {
     message !== null &&
     message.type === "VIDEO_CONTEXT_REQUEST"
   ) {
-    const videoContextResponse = buildVideoContextResponse();
+    const requestPayload = message.payload;
+    const requestId =
+      typeof requestPayload?.requestId === "string" ? requestPayload.requestId : "";
+    const videoContextResponse = buildVideoContextResponse(requestId);
     sendVideoContextResponse(videoContextResponse);
   }
 }

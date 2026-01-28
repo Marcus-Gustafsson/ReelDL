@@ -6,6 +6,7 @@
   "permissions": [
     "contextMenus",
     "downloads",
+    "notifications",
     "scripting",
     "storage"
   ],
