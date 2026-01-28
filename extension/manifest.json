@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "ReelDL Helper",
+  "version": "1.0.0",
+  "description": "Adds simple context menu and page tracking helpers for Facebook and Instagram.",
+  "permissions": [
+    "contextMenus",
+    "downloads",
+    "scripting",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://www.facebook.com/*",
+    "https://www.instagram.com/*"
+  ],
+  "background": {
+    "service_worker": "background/service_worker.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.facebook.com/*",
+        "https://www.instagram.com/*"
+      ],
+      "js": ["content/video_context_capture.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
