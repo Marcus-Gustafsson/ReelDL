@@ -10,9 +10,11 @@
 /**
  * @typedef {Object} VideoContextResponse
  * @property {string | null} videoUrl - The extracted video URL, when available.
+ * @property {string} pageUrl - The canonical page URL for the current page.
  * @property {string} pageTitle - The document title to help identify the content.
  * @property {string} platformName - The platform or site name derived from metadata.
  * @property {string} requestId - The identifier for the request-response cycle.
+ * @property {VideoDebugDetails} debugDetails - Extra details to help with debugging.
  */
 
 /**
@@ -25,6 +27,48 @@
  * @type {Element | null}
  */
 let lastRightClickedElement = null;
+
+/**
+ * @typedef {Object} VideoDebugDetails
+ * @property {string} pageUrl - The URL of the page where the request originated.
+ * @property {ContextMenuTargetData | null} lastContextMenuTarget - The last stored context menu data.
+ * @property {VideoElementDebugDetails | null} nearestVideoElement - Debug details about the closest video element.
+ * @property {VideoMetadataDebugDetails} metadata - Debug details from page metadata.
+ */
+
+/**
+ * @typedef {Object} VideoElementDebugDetails
+ * @property {string | null} tagName - The element tag name if present.
+ * @property {string | null} currentSourceUrl - The currentSrc value when available.
+ * @property {string | null} sourceUrl - The src attribute value when available.
+ * @property {string[]} nestedSourceUrls - Any <source> URLs inside the video element.
+ * @property {boolean} hasBlobUrl - Whether any candidate URLs use a blob scheme.
+ * @property {boolean} isVideoPaused - Whether the video element is paused.
+ * @property {boolean} isVideoEnded - Whether the video element is ended.
+ */
+
+/**
+ * @typedef {Object} VideoMetadataDebugDetails
+ * @property {string | null} openGraphVideo - The og:video metadata if present.
+ * @property {string | null} openGraphVideoUrl - The og:video:url metadata if present.
+ * @property {string | null} openGraphSiteName - The og:site_name metadata if present.
+ */
+
+/**
+ * Track the last context menu target details for debugging.
+ * @type {ContextMenuTargetData | null}
+ */
+let lastContextMenuTargetData = null;
+
+/**
+ * Log debug information in a consistent format for beginners.
+ * @param {string} debugMessage - The message to display.
+ * @param {unknown} debugPayload - Extra data that helps troubleshooting.
+ * @returns {void}
+ */
+function logDebugInformation(debugMessage, debugPayload) {
+  console.info(`[ReelDL][Content] ${debugMessage}`, debugPayload);
+}
 
 /**
  * Extract data about the element the user right-clicked on.
@@ -66,6 +110,7 @@ function storeLastRightClickedElement(mouseEvent) {
  */
 function storeContextMenuTargetData(contextMenuTargetData) {
   // Beginner-friendly note: chrome.storage.local stores simple JSON-like data.
+  lastContextMenuTargetData = contextMenuTargetData;
   chrome.storage.local.set({
     lastContextMenuTarget: contextMenuTargetData
   });
@@ -127,6 +172,41 @@ function extractVideoUrlFromElement(videoElement) {
 }
 
 /**
+ * Collect debug details from a video element for troubleshooting.
+ * @param {HTMLVideoElement | null} videoElement - The video element to inspect.
+ * @returns {VideoElementDebugDetails | null}
+ */
+function buildVideoElementDebugDetails(videoElement) {
+  if (!videoElement) {
+    return null;
+  }
+
+  const nestedSourceUrls = Array.from(
+    videoElement.querySelectorAll("source")
+  ).map((sourceElement) => sourceElement.src).filter(Boolean);
+
+  const candidateUrls = [
+    videoElement.currentSrc,
+    videoElement.src,
+    ...nestedSourceUrls
+  ].filter(Boolean);
+
+  const hasBlobUrl = candidateUrls.some((urlCandidate) =>
+    urlCandidate.startsWith("blob:")
+  );
+
+  return {
+    tagName: videoElement.tagName,
+    currentSourceUrl: videoElement.currentSrc || null,
+    sourceUrl: videoElement.src || null,
+    nestedSourceUrls,
+    hasBlobUrl,
+    isVideoPaused: videoElement.paused,
+    isVideoEnded: videoElement.ended
+  };
+}
+
+/**
  * Extract a video URL from page metadata like Open Graph tags.
  * @returns {string | null}
  */
@@ -140,6 +220,22 @@ function extractVideoUrlFromMetadata() {
   }
 
   return null;
+}
+
+/**
+ * Extract a canonical page URL from metadata or fall back to the current URL.
+ * @returns {string}
+ */
+function extractPageUrlFromMetadata() {
+  // Beginner-friendly note: Open Graph tags often contain the "official" URL.
+  const openGraphUrl = document.querySelector('meta[property="og:url"]');
+
+  if (openGraphUrl instanceof HTMLMetaElement && openGraphUrl.content) {
+    return openGraphUrl.content;
+  }
+
+  // Fallback to the current browser URL if metadata is missing.
+  return window.location.href;
 }
 
 /**
@@ -171,12 +267,20 @@ function buildVideoContextResponse(requestId) {
   const nearestVideoElement = findNearestVideoElement(lastRightClickedElement);
   const videoUrlFromElement = extractVideoUrlFromElement(nearestVideoElement);
   const videoUrlFromMetadata = extractVideoUrlFromMetadata();
+  const pageUrl = extractPageUrlFromMetadata();
 
   return {
     videoUrl: videoUrlFromElement ?? videoUrlFromMetadata,
+    pageUrl,
     pageTitle: document.title,
     platformName: getPlatformName(),
-    requestId
+    requestId,
+    debugDetails: {
+      pageUrl: window.location.href,
+      lastContextMenuTarget: lastContextMenuTargetData,
+      nearestVideoElement: videoElementDebugDetails,
+      metadata: metadataDebugDetails
+    }
   };
 }
 
@@ -202,6 +306,7 @@ function handleContextMenuEvent(mouseEvent) {
   storeLastRightClickedElement(mouseEvent);
   const contextMenuTargetData = buildContextMenuTargetData(mouseEvent);
   storeContextMenuTargetData(contextMenuTargetData);
+  logDebugInformation("Stored context menu target data.", contextMenuTargetData);
 }
 
 /**
@@ -217,8 +322,11 @@ function handleRuntimeMessage(message) {
   ) {
     const requestPayload = message.payload;
     const requestId =
-      typeof requestPayload?.requestId === "string" ? requestPayload.requestId : "";
+      typeof requestPayload?.requestId === "string"
+        ? requestPayload.requestId
+        : "";
     const videoContextResponse = buildVideoContextResponse(requestId);
+    logDebugInformation("Sending video context response.", videoContextResponse);
     sendVideoContextResponse(videoContextResponse);
   }
 }

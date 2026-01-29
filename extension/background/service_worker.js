@@ -15,9 +15,44 @@
 /**
  * @typedef {Object} VideoContextPayload
  * @property {string | null} videoUrl - The extracted video URL, when available.
+ * @property {string} pageUrl - The canonical page URL for the current page.
  * @property {string} pageTitle - The document title to help identify the content.
  * @property {string} platformName - The platform or site name derived from metadata.
  * @property {string} requestId - The identifier for the request-response cycle.
+ * @property {VideoDebugDetails} debugDetails - Extra details to help with debugging.
+ */
+
+/**
+ * @typedef {Object} VideoDebugDetails
+ * @property {string} pageUrl - The URL of the page where the request originated.
+ * @property {ContextMenuTargetData | null} lastContextMenuTarget - The last stored context menu data.
+ * @property {VideoElementDebugDetails | null} nearestVideoElement - Debug details about the closest video element.
+ * @property {VideoMetadataDebugDetails} metadata - Debug details from page metadata.
+ */
+
+/**
+ * @typedef {Object} ContextMenuTargetData
+ * @property {string} pageUrl - The URL of the page where the user right-clicked.
+ * @property {string} elementTagName - The tag name of the element that was clicked.
+ * @property {string | null} elementAriaLabel - The accessible label, if present.
+ */
+
+/**
+ * @typedef {Object} VideoElementDebugDetails
+ * @property {string | null} tagName - The element tag name if present.
+ * @property {string | null} currentSourceUrl - The currentSrc value when available.
+ * @property {string | null} sourceUrl - The src attribute value when available.
+ * @property {string[]} nestedSourceUrls - Any <source> URLs inside the video element.
+ * @property {boolean} hasBlobUrl - Whether any candidate URLs use a blob scheme.
+ * @property {boolean} isVideoPaused - Whether the video element is paused.
+ * @property {boolean} isVideoEnded - Whether the video element is ended.
+ */
+
+/**
+ * @typedef {Object} VideoMetadataDebugDetails
+ * @property {string | null} openGraphVideo - The og:video metadata if present.
+ * @property {string | null} openGraphVideoUrl - The og:video:url metadata if present.
+ * @property {string | null} openGraphSiteName - The og:site_name metadata if present.
  */
 
 /**
@@ -49,6 +84,16 @@ const DEFAULT_VIDEO_EXTENSION = "mp4";
  * @type {number}
  */
 const RESPONSE_TIMEOUT_IN_MILLISECONDS = 3000;
+
+/**
+ * Log debug information in a consistent format for beginners.
+ * @param {string} debugMessage - The message to display.
+ * @param {unknown} debugPayload - Extra data that helps troubleshooting.
+ * @returns {void}
+ */
+function logDebugInformation(debugMessage, debugPayload) {
+  console.info(`[ReelDL][Background] ${debugMessage}`, debugPayload);
+}
 
 /**
  * Create a single context menu entry that is visible on every page.
@@ -131,6 +176,10 @@ function requestVideoContextFromTab(tabId) {
 
   return new Promise((resolve) => {
     const responseTimeout = setTimeout(() => {
+      logDebugInformation("Timed out waiting for content script response.", {
+        tabId,
+        requestId
+      });
       chrome.runtime.onMessage.removeListener(handleResponseMessage);
       resolve(null);
     }, RESPONSE_TIMEOUT_IN_MILLISECONDS);
@@ -151,6 +200,7 @@ function requestVideoContextFromTab(tabId) {
       ) {
         clearTimeout(responseTimeout);
         chrome.runtime.onMessage.removeListener(handleResponseMessage);
+        logDebugInformation("Received video context response.", message.payload);
         resolve(message.payload);
       }
     }
@@ -166,6 +216,11 @@ function requestVideoContextFromTab(tabId) {
       },
       () => {
         if (chrome.runtime.lastError) {
+          logDebugInformation("Failed to message the content script.", {
+            tabId,
+            requestId,
+            errorMessage: chrome.runtime.lastError.message
+          });
           clearTimeout(responseTimeout);
           chrome.runtime.onMessage.removeListener(handleResponseMessage);
           resolve(null);
@@ -176,21 +231,46 @@ function requestVideoContextFromTab(tabId) {
 }
 
 /**
+ * Decide which URL should be used for downloading based on the platform.
+ * @param {VideoContextPayload} videoContextPayload - The details about the video.
+ * @returns {string | null}
+ */
+function resolvePreferredDownloadUrl(videoContextPayload) {
+  const normalizedPlatformName = videoContextPayload.platformName.toLowerCase();
+  const shouldPreferPageUrl =
+    normalizedPlatformName === "facebook.com" || !videoContextPayload.videoUrl;
+
+  // Beginner-friendly note: Facebook often needs the page URL, not the video URL.
+  if (shouldPreferPageUrl && videoContextPayload.pageUrl) {
+    return videoContextPayload.pageUrl;
+  }
+
+  return videoContextPayload.videoUrl ?? videoContextPayload.pageUrl ?? null;
+}
+
+/**
  * Begin a download for the provided video context data.
  * @param {VideoContextPayload} videoContextPayload - The details about the video.
  * @returns {void}
  */
 function startDownloadFromContext(videoContextPayload) {
-  if (!videoContextPayload.videoUrl) {
+  const downloadUrlToUse = resolvePreferredDownloadUrl(videoContextPayload);
+
+  if (!downloadUrlToUse) {
     reportDownloadError("ReelDL could not find a downloadable video URL.");
     return;
   }
 
   const filenameToUse = buildDownloadFilename(videoContextPayload);
 
+  logDebugInformation("Starting download with context payload.", {
+    filenameToUse,
+    videoContextPayload
+  });
+
   chrome.downloads.download(
     {
-      url: videoContextPayload.videoUrl,
+      url: downloadUrlToUse,
       filename: filenameToUse,
       saveAs: true
     },
