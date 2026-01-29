@@ -14,7 +14,6 @@
 
 /**
  * @typedef {Object} VideoContextPayload
- * @property {string | null} videoUrl - The extracted video URL, when available.
  * @property {string} pageUrl - The canonical page URL for the current page.
  * @property {string} pageTitle - The document title to help identify the content.
  * @property {string} platformName - The platform or site name derived from metadata.
@@ -26,7 +25,6 @@
  * @typedef {Object} VideoDebugDetails
  * @property {string} pageUrl - The URL of the page where the request originated.
  * @property {ContextMenuTargetData | null} lastContextMenuTarget - The last stored context menu data.
- * @property {VideoElementDebugDetails | null} nearestVideoElement - Debug details about the closest video element.
  * @property {VideoMetadataDebugDetails} metadata - Debug details from page metadata.
  */
 
@@ -38,21 +36,23 @@
  */
 
 /**
- * @typedef {Object} VideoElementDebugDetails
- * @property {string | null} tagName - The element tag name if present.
- * @property {string | null} currentSourceUrl - The currentSrc value when available.
- * @property {string | null} sourceUrl - The src attribute value when available.
- * @property {string[]} nestedSourceUrls - Any <source> URLs inside the video element.
- * @property {boolean} hasBlobUrl - Whether any candidate URLs use a blob scheme.
- * @property {boolean} isVideoPaused - Whether the video element is paused.
- * @property {boolean} isVideoEnded - Whether the video element is ended.
+ * @typedef {Object} VideoMetadataDebugDetails
+ * @property {string | null} openGraphUrl - The og:url metadata if present.
+ * @property {string | null} openGraphSiteName - The og:site_name metadata if present.
  */
 
 /**
- * @typedef {Object} VideoMetadataDebugDetails
- * @property {string | null} openGraphVideo - The og:video metadata if present.
- * @property {string | null} openGraphVideoUrl - The og:video:url metadata if present.
- * @property {string | null} openGraphSiteName - The og:site_name metadata if present.
+ * @typedef {Object} NativeDownloadRequest
+ * @property {"download"} action - The action identifier for the native host.
+ * @property {string} pageUrl - The page URL to pass to yt-dlp.
+ * @property {string} pageTitle - The page title for logging purposes.
+ * @property {string} platformName - The platform name for logging purposes.
+ */
+
+/**
+ * @typedef {Object} NativeDownloadResponse
+ * @property {"ok" | "error"} status - The status from the native host.
+ * @property {string} message - A human-readable message about the result.
  */
 
 /**
@@ -74,16 +74,16 @@ const VIDEO_CONTEXT_REQUEST_TYPE = "VIDEO_CONTEXT_REQUEST";
 const VIDEO_CONTEXT_RESPONSE_TYPE = "VIDEO_CONTEXT_RESPONSE";
 
 /**
- * The fallback file extension for downloads.
- * @type {string}
- */
-const DEFAULT_VIDEO_EXTENSION = "mp4";
-
-/**
  * The maximum time (in milliseconds) to wait for a content script response.
  * @type {number}
  */
 const RESPONSE_TIMEOUT_IN_MILLISECONDS = 3000;
+
+/**
+ * The native messaging host name registered with Chrome.
+ * @type {string}
+ */
+const NATIVE_HOST_NAME = "com.reeldl.native_host";
 
 /**
  * Log debug information in a consistent format for beginners.
@@ -104,7 +104,7 @@ function createContextMenuEntry() {
   chrome.contextMenus.removeAll(() => {
     chrome.contextMenus.create({
       id: CONTEXT_MENU_IDENTIFIER,
-      title: "Download video with ReelDL",
+      title: "Download Facebook reel with ReelDL",
       contexts: ["page"]
     });
   });
@@ -132,38 +132,17 @@ function reportDownloadError(messageToDisplay) {
 }
 
 /**
- * Create a safe, beginner-friendly filename for the download.
- * @param {VideoContextPayload} videoContextPayload - The details from the content script.
- * @returns {string}
+ * Build the native messaging payload that tells the helper to run yt-dlp.
+ * @param {VideoContextPayload} videoContextPayload - The details about the page.
+ * @returns {NativeDownloadRequest}
  */
-function buildDownloadFilename(videoContextPayload) {
-  const safePlatformName = sanitizeFilenameSegment(
-    videoContextPayload.platformName
-  );
-  const safePageTitle = sanitizeFilenameSegment(videoContextPayload.pageTitle);
-  const timestampForFilename = new Date()
-    .toISOString()
-    .replace(/[:.]/g, "-");
-
-  const filenameParts = [
-    safePlatformName || "platform",
-    safePageTitle || "video",
-    timestampForFilename
-  ];
-
-  return `${filenameParts.join("-")}.${DEFAULT_VIDEO_EXTENSION}`;
-}
-
-/**
- * Replace unsafe filename characters with hyphens for easy reading.
- * @param {string} valueToSanitize - The value that should become filename-safe.
- * @returns {string}
- */
-function sanitizeFilenameSegment(valueToSanitize) {
-  return valueToSanitize
-    .toLowerCase()
-    .replace(/[^a-z0-9-_]+/g, "-")
-    .replace(/^-+|-+$/g, "");
+function buildNativeDownloadRequest(videoContextPayload) {
+  return {
+    action: "download",
+    pageUrl: videoContextPayload.pageUrl,
+    pageTitle: videoContextPayload.pageTitle,
+    platformName: videoContextPayload.platformName
+  };
 }
 
 /**
@@ -231,57 +210,75 @@ function requestVideoContextFromTab(tabId) {
 }
 
 /**
- * Decide which URL should be used for downloading based on the platform.
- * @param {VideoContextPayload} videoContextPayload - The details about the video.
- * @returns {string | null}
+ * Send a native message to the local helper and wait for its response.
+ * @param {NativeDownloadRequest} nativeDownloadRequest - The request to send.
+ * @returns {Promise<NativeDownloadResponse | null>}
  */
-function resolvePreferredDownloadUrl(videoContextPayload) {
-  const normalizedPlatformName = videoContextPayload.platformName.toLowerCase();
-  const shouldPreferPageUrl =
-    normalizedPlatformName === "facebook.com" || !videoContextPayload.videoUrl;
+function sendDownloadRequestToNativeHost(nativeDownloadRequest) {
+  return new Promise((resolve) => {
+    chrome.runtime.sendNativeMessage(
+      NATIVE_HOST_NAME,
+      nativeDownloadRequest,
+      (response) => {
+        if (chrome.runtime.lastError) {
+          logDebugInformation("Native host request failed.", {
+            errorMessage: chrome.runtime.lastError.message
+          });
+          resolve(null);
+          return;
+        }
 
-  // Beginner-friendly note: Facebook often needs the page URL, not the video URL.
-  if (shouldPreferPageUrl && videoContextPayload.pageUrl) {
-    return videoContextPayload.pageUrl;
-  }
+        if (
+          typeof response === "object" &&
+          response !== null &&
+          typeof response.status === "string"
+        ) {
+          resolve(response);
+          return;
+        }
 
-  return videoContextPayload.videoUrl ?? videoContextPayload.pageUrl ?? null;
+        resolve(null);
+      }
+    );
+  });
 }
 
 /**
  * Begin a download for the provided video context data.
- * @param {VideoContextPayload} videoContextPayload - The details about the video.
- * @returns {void}
+ * @param {VideoContextPayload} videoContextPayload - The details about the page.
+ * @returns {Promise<void>}
  */
-function startDownloadFromContext(videoContextPayload) {
-  const downloadUrlToUse = resolvePreferredDownloadUrl(videoContextPayload);
-
-  if (!downloadUrlToUse) {
-    reportDownloadError("ReelDL could not find a downloadable video URL.");
+async function startDownloadFromContext(videoContextPayload) {
+  if (!videoContextPayload.pageUrl) {
+    reportDownloadError("ReelDL could not find the current page URL.");
     return;
   }
 
-  const filenameToUse = buildDownloadFilename(videoContextPayload);
-
-  logDebugInformation("Starting download with context payload.", {
-    filenameToUse,
+  const nativeDownloadRequest = buildNativeDownloadRequest(
     videoContextPayload
+  );
+
+  logDebugInformation("Sending download request to native host.", {
+    nativeDownloadRequest
   });
 
-  chrome.downloads.download(
-    {
-      url: downloadUrlToUse,
-      filename: filenameToUse,
-      saveAs: true
-    },
-    (downloadId) => {
-      if (chrome.runtime.lastError || !downloadId) {
-        reportDownloadError(
-          "ReelDL could not start the download. The URL may be blocked."
-        );
-      }
-    }
+  const nativeDownloadResponse = await sendDownloadRequestToNativeHost(
+    nativeDownloadRequest
   );
+
+  if (!nativeDownloadResponse) {
+    reportDownloadError(
+      "ReelDL could not reach the yt-dlp helper. Make sure it is installed."
+    );
+    return;
+  }
+
+  if (nativeDownloadResponse.status !== "ok") {
+    reportDownloadError(
+      nativeDownloadResponse.message ||
+        "ReelDL could not start yt-dlp. Check the helper logs."
+    );
+  }
 }
 
 /**
@@ -311,7 +308,7 @@ async function handleContextMenuClick(clickInformation, tabInformation) {
     return;
   }
 
-  startDownloadFromContext(videoContextPayload);
+  await startDownloadFromContext(videoContextPayload);
 }
 
 /**

@@ -2,17 +2,15 @@
   "manifest_version": 3,
   "name": "ReelDL Helper",
   "version": "1.0.0",
-  "description": "Adds simple context menu and page tracking helpers for Facebook and Instagram.",
+  "description": "Adds a context menu helper that sends Facebook reel URLs to yt-dlp.",
   "permissions": [
     "contextMenus",
-    "downloads",
+    "nativeMessaging",
     "notifications",
-    "scripting",
     "storage"
   ],
   "host_permissions": [
-    "https://www.facebook.com/*",
-    "https://www.instagram.com/*"
+    "https://www.facebook.com/*"
   ],
   "background": {
     "service_worker": "background/service_worker.js"
@@ -20,8 +18,7 @@
   "content_scripts": [
     {
       "matches": [
-        "https://www.facebook.com/*",
-        "https://www.instagram.com/*"
+        "https://www.facebook.com/*"
       ],
       "js": ["content/video_context_capture.js"],
       "run_at": "document_idle"

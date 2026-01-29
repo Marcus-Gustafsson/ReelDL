@@ -1,0 +1,7 @@
+{
+  "name": "com.reeldl.native_host",
+  "description": "Native messaging host for ReelDL that launches yt-dlp.",
+  "path": "REPLACE_WITH_ABSOLUTE_PATH_TO\\reeldl_native_host.py",
+  "type": "stdio",
+  "allowed_origins": ["chrome-extension://REPLACE_WITH_EXTENSION_ID/"]
+}
