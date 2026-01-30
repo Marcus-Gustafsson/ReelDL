@@ -6,22 +6,12 @@
   "permissions": [
     "contextMenus",
     "nativeMessaging",
-    "notifications",
-    "storage"
+    "notifications"
   ],
   "host_permissions": [
     "https://www.facebook.com/*"
   ],
   "background": {
     "service_worker": "background/service_worker.js"
-  },
-  "content_scripts": [
-    {
-      "matches": [
-        "https://www.facebook.com/*"
-      ],
-      "js": ["content/video_context_capture.js"],
-      "run_at": "document_idle"
-    }
-  ]
+  }
 }

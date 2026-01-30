@@ -4,41 +4,23 @@
  * @typedef {Object} ContextMenuClickInfo
  * @property {string} menuItemId - The identifier of the clicked context menu item.
  * @property {string} [pageUrl] - The URL of the page where the click happened.
+ * @property {string} [linkUrl] - The link URL if the user right-clicked a link.
+ * @property {string} [srcUrl] - The media source URL if the user clicked media.
  */
 
 /**
  * @typedef {Object} TabInformation
  * @property {number} id - The numeric identifier for the tab.
  * @property {string} url - The URL currently loaded in the tab.
+ * @property {string} [title] - The title of the current tab.
  */
 
 /**
  * @typedef {Object} VideoContextPayload
- * @property {string} pageUrl - The canonical page URL for the current page.
+ * @property {string} pageUrl - The best URL to send to the native helper.
  * @property {string} pageTitle - The document title to help identify the content.
- * @property {string} platformName - The platform or site name derived from metadata.
- * @property {string} requestId - The identifier for the request-response cycle.
- * @property {VideoDebugDetails} debugDetails - Extra details to help with debugging.
- */
-
-/**
- * @typedef {Object} VideoDebugDetails
- * @property {string} pageUrl - The URL of the page where the request originated.
- * @property {ContextMenuTargetData | null} lastContextMenuTarget - The last stored context menu data.
- * @property {VideoMetadataDebugDetails} metadata - Debug details from page metadata.
- */
-
-/**
- * @typedef {Object} ContextMenuTargetData
- * @property {string} pageUrl - The URL of the page where the user right-clicked.
- * @property {string} elementTagName - The tag name of the element that was clicked.
- * @property {string | null} elementAriaLabel - The accessible label, if present.
- */
-
-/**
- * @typedef {Object} VideoMetadataDebugDetails
- * @property {string | null} openGraphUrl - The og:url metadata if present.
- * @property {string | null} openGraphSiteName - The og:site_name metadata if present.
+ * @property {string} platformName - The platform or site name derived from the tab URL.
+ * @property {ContextMenuClickInfo} clickInformation - Details about the context menu click.
  */
 
 /**
@@ -60,24 +42,6 @@
  * @type {string}
  */
 const CONTEXT_MENU_IDENTIFIER = "reeldl_download_video";
-
-/**
- * The message type used to ask the content script for video details.
- * @type {string}
- */
-const VIDEO_CONTEXT_REQUEST_TYPE = "VIDEO_CONTEXT_REQUEST";
-
-/**
- * The message type used by the content script to respond with video details.
- * @type {string}
- */
-const VIDEO_CONTEXT_RESPONSE_TYPE = "VIDEO_CONTEXT_RESPONSE";
-
-/**
- * The maximum time (in milliseconds) to wait for a content script response.
- * @type {number}
- */
-const RESPONSE_TIMEOUT_IN_MILLISECONDS = 3000;
 
 /**
  * The native messaging host name registered with Chrome.
@@ -105,7 +69,7 @@ function createContextMenuEntry() {
     chrome.contextMenus.create({
       id: CONTEXT_MENU_IDENTIFIER,
       title: "Download Facebook reel with ReelDL",
-      contexts: ["page"]
+      contexts: ["page", "link", "video"]
     });
   });
 }
@@ -146,67 +110,45 @@ function buildNativeDownloadRequest(videoContextPayload) {
 }
 
 /**
- * Request video context data from the active tab's content script.
- * @param {number} tabId - The identifier of the active tab.
- * @returns {Promise<VideoContextPayload | null>}
+ * Extract a hostname from a URL string, or fall back to facebook.com.
+ * @param {string} urlToParse - The URL to parse.
+ * @returns {string}
  */
-function requestVideoContextFromTab(tabId) {
-  const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+function extractHostnameOrFallback(urlToParse) {
+  if (!urlToParse) {
+    return "facebook.com";
+  }
 
-  return new Promise((resolve) => {
-    const responseTimeout = setTimeout(() => {
-      logDebugInformation("Timed out waiting for content script response.", {
-        tabId,
-        requestId
-      });
-      chrome.runtime.onMessage.removeListener(handleResponseMessage);
-      resolve(null);
-    }, RESPONSE_TIMEOUT_IN_MILLISECONDS);
+  try {
+    return new URL(urlToParse).hostname;
+  } catch (error) {
+    return "facebook.com";
+  }
+}
 
-    /**
-     * Handle incoming responses from the content script.
-     * @param {unknown} message - The message sent from the content script.
-     * @param {chrome.runtime.MessageSender} sender - The sender details.
-     * @returns {void}
-     */
-    function handleResponseMessage(message, sender) {
-      if (
-        sender.tab?.id === tabId &&
-        typeof message === "object" &&
-        message !== null &&
-        message.type === VIDEO_CONTEXT_RESPONSE_TYPE &&
-        message.payload?.requestId === requestId
-      ) {
-        clearTimeout(responseTimeout);
-        chrome.runtime.onMessage.removeListener(handleResponseMessage);
-        logDebugInformation("Received video context response.", message.payload);
-        resolve(message.payload);
-      }
-    }
+/**
+ * Select the most useful URL for yt-dlp based on the click context.
+ * @param {ContextMenuClickInfo} clickInformation - Details about the click.
+ * @param {TabInformation} tabInformation - Details about the current tab.
+ * @returns {string}
+ */
+function selectReelUrl(clickInformation, tabInformation) {
+  const linkUrl =
+    typeof clickInformation.linkUrl === "string"
+      ? clickInformation.linkUrl
+      : "";
+  const sourceUrl =
+    typeof clickInformation.srcUrl === "string"
+      ? clickInformation.srcUrl
+      : "";
+  const pageUrl =
+    typeof clickInformation.pageUrl === "string"
+      ? clickInformation.pageUrl
+      : "";
+  const tabUrl = typeof tabInformation.url === "string" ? tabInformation.url : "";
 
-    chrome.runtime.onMessage.addListener(handleResponseMessage);
-
-    // Beginner-friendly note: we ask the content script for video details.
-    chrome.tabs.sendMessage(
-      tabId,
-      {
-        type: VIDEO_CONTEXT_REQUEST_TYPE,
-        payload: { requestId }
-      },
-      () => {
-        if (chrome.runtime.lastError) {
-          logDebugInformation("Failed to message the content script.", {
-            tabId,
-            requestId,
-            errorMessage: chrome.runtime.lastError.message
-          });
-          clearTimeout(responseTimeout);
-          chrome.runtime.onMessage.removeListener(handleResponseMessage);
-          resolve(null);
-        }
-      }
-    );
-  });
+  // Beginner-friendly note: prefer explicit URLs from the click event.
+  return linkUrl || sourceUrl || pageUrl || tabUrl;
 }
 
 /**
@@ -297,16 +239,17 @@ async function handleContextMenuClick(clickInformation, tabInformation) {
     return;
   }
 
-  const videoContextPayload = await requestVideoContextFromTab(
-    tabInformation.id
-  );
+  const selectedPageUrl = selectReelUrl(clickInformation, tabInformation);
+  const videoContextPayload = {
+    pageUrl: selectedPageUrl,
+    pageTitle: tabInformation.title || "Facebook Reel",
+    platformName: extractHostnameOrFallback(tabInformation.url || ""),
+    clickInformation
+  };
 
-  if (!videoContextPayload) {
-    reportDownloadError(
-      "ReelDL could not reach the content script. The page might be blocked."
-    );
-    return;
-  }
+  logDebugInformation("Prepared download payload from context click.", {
+    selectedPageUrl
+  });
 
   await startDownloadFromContext(videoContextPayload);
 }
